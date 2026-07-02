@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { supabase } from '@/lib/supabase';
-import { Copy, Check, Eye, EyeOff, RefreshCw, ShoppingBag } from 'lucide-react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { Plus, Edit2, Trash2, LogOut, Check, X, Tag, Package, Eye, Layers } from 'lucide-react';
 
 interface Producto {
   id: string;
@@ -11,147 +12,370 @@ interface Producto {
   precio_cup: number;
   categoria: string;
   disponible: boolean;
+  url_imagen?: string;
 }
 
-interface Tienda {
-  id: string;
-  nombre_tienda: string;
-  slug: string;
-}
+// LISTA DE CATEGORÍAS GENERALIZADAS PARA EL MERCADO
+const CATEGORIAS_ESTANDAR = [
+  "Electrodomésticos",
+  "Celulares y Accesorios",
+  "Ropa y Calzado",
+  "Belleza y Salud",
+  "Ferreteria",
+  "Juguetes y Pasatiempos",
+  "Alimentos y Bebidas",
+  "Otros"
+];
 
-export default function PanelVendedor() {
-  const [tienda, setTienda] = useState<Tienda | null>(null);
+function ContenidoPanel() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const slug = searchParams.get('t');
+
+  const [tiendaId, setTiendaId] = useState<string | null>(null);
+  const [nombreTienda, setNombreTienda] = useState('');
   const [productos, setProductos] = useState<Producto[]>([]);
-  const [textoCopiado, setTextoCopiado] = useState(false);
   const [cargando, setCargando] = useState(true);
 
-  // Hardcodeamos temporalmente el slug para las pruebas de desarrollo
-  const SLUG_PRUEBA = 'bazar-onder'; 
+  // Estados para el Formulario (Crear / Editar)
+  const [editandoId, setEditandoId] = useState<string | null>(null);
+  const [nombre, setNombre] = useState('');
+  const [precioUsd, setPrecioUsd] = useState('');
+  const [precioCup, setPrecioCup] = useState('');
+  // Inicializamos con la primera categoría de la lista oficial
+  const [categoria, setCategoria] = useState(CATEGORIAS_ESTANDAR[0]);
+  const [disponible, setDisponible] = useState(true);
+  const [urlImagen, setUrlImagen] = useState('');
 
   useEffect(() => {
-    async function cargarDatosPanel() {
-      const { data: tiendaData } = await supabase
+    async function verificarAcceso() {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        router.push('/');
+        return;
+      }
+
+      if (!slug) {
+        router.push('/');
+        return;
+      }
+
+      const { data: tienda } = await supabase
         .from('tiendas')
         .select('*')
-        .eq('slug', SLUG_PRUEBA)
+        .eq('slug', slug)
+        .eq('user_id', session.user.id)
         .single();
 
-      if (tiendaData) {
-        setTienda(tiendaData);
-        const { data: productosData } = await supabase
-          .from('productos')
-          .select('*')
-          .eq('tienda_id', tiendaData.id)
-          .order('categoria', { ascending: true });
-        
-        setProductos(productosData || []);
+      if (!tienda) {
+        router.push('/');
+        return;
       }
-      setCargando(false);
+
+      setTiendaId(tienda.id);
+      setNombreTienda(tienda.nombre_tienda);
+      cargarProductos(tienda.id);
     }
-    cargarDatosPanel();
-  }, []);
 
-  const alternarDisponibilidad = async (id: string, estadoActual: boolean) => {
-    const nuevoEstado = !estadoActual;
-    
-    // Actualización optimista en interfaz
-    setProductos(prev => prev.map(p => p.id === id ? { ...p, disponible: nuevoEstado } : p));
+    verificarAcceso();
+  }, [slug, router]);
 
-    // Guardar en Supabase
-    await supabase
+  async function cargarProductos(idTienda: string) {
+    const { data, error } = await supabase
       .from('productos')
-      .update({ disponible: nuevoEstado })
-      .eq('id', id);
+      .select('*')
+      .eq('tienda_id', idTienda)
+      .order('categoria', { ascending: true }); // Orden seguro corregido
+    
+    if (error) {
+      console.error("🚨 Error crítico de Supabase cargando productos:", error.message);
+    }
+    
+    setProductos(data || []);
+    setCargando(false);
+  }
+
+  const prepararEdicion = (p: Producto) => {
+    setEditandoId(p.id);
+    setNombre(p.nombre);
+    setPrecioUsd(p.precio_usd.toString());
+    setPrecioCup(p.precio_cup.toString());
+    
+    // Si la categoría vieja no está en la lista nueva, forzar una válida para que no se rompa el select
+    setCategoria(CATEGORIAS_ESTANDAR.includes(p.categoria) ? p.categoria : CATEGORIAS_ESTANDAR[0]);
+    
+    setDisponible(p.disponible);
+    setUrlImagen(p.url_imagen || '');
   };
 
-  const generarPegoteTexto = () => {
-    if (!tienda || productos.length === 0) return '';
-
-    let texto = `🛍️ *¡PRODUCTOS DISPONIBLES EN ${tienda.nombre_tienda.toUpperCase()}!* 🛍️\n`;
-    texto += `⚡ _Pide directo a mi WhatsApp antes de que se agoten_ ⚡\n\n`;
-
-    // Agrupar productos por categoría
-    const categorias = Array.from(new Set(productos.filter(p => p.disponible).map(p => p.categoria)));
-
-    categorias.forEach(cat => {
-      texto += `🔹 *${cat.toUpperCase()}*\n`;
-      const prodsDeCat = productos.filter(p => p.categoria === cat && p.disponible);
-      
-      prodsDeCat.forEach(p => {
-        texto += `• ${p.nombre} ➔ *$${p.precio_usd} USD*`;
-        if (p.precio_cup) {
-          texto += ` _(ó $${p.precio_cup.toLocaleString()} CUP)_`;
-        }
-        texto += `\n`;
-      });
-      texto += `\n`;
-    });
-
-    texto += `-----------------------------------------\n`;
-    texto += `📸 *¿Quieres ver fotos de todo y armar tu carrito rápido? Entra aquí sin gastar megas:* \n`;
-    texto += `👉 http://localhost:3000/${tienda.slug}`; // En producción cambiar por dominio real
-
-    return texto;
+  const limpiarFormulario = () => {
+    setEditandoId(null);
+    setNombre('');
+    setPrecioUsd('');
+    setPrecioCup('');
+    setCategoria(CATEGORIAS_ESTANDAR[0]); // Resetea a la primera opción por defecto
+    setDisponible(true);
+    setUrlImagen('');
   };
 
-  const copiarAlPortapapeles = () => {
-    const texto = generarPegoteTexto();
-    navigator.clipboard.writeText(texto);
-    setTextoCopiado(true);
-    setTimeout(() => setTextoCopiado(false), 2500);
+  const guardarProducto = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!tiendaId) return;
+
+    const datosProducto = {
+      nombre: nombre.trim(),
+      precio_usd: parseFloat(precioUsd) || 0,
+      precio_cup: parseFloat(precioCup) || 0,
+      categoria: categoria, // Directamente el valor controlado por el select
+      disponible,
+      url_imagen: urlImagen.trim() || null,
+      tienda_id: tiendaId
+    };
+
+    try {
+      if (editandoId) {
+        const { error } = await supabase
+          .from('productos')
+          .update(datosProducto)
+          .eq('id', editandoId);
+
+        if (error) throw error;
+        alert("¡Producto actualizado con éxito!");
+      } else {
+        const { error } = await supabase
+          .from('productos')
+          .insert([datosProducto]);
+
+        if (error) throw error;
+        alert("¡Producto añadido con éxito!");
+      }
+
+      limpiarFormulario();
+      cargarProductos(tiendaId);
+    } catch (err: any) {
+      alert("Error al guardar: " + err.message);
+    }
   };
 
-  if (cargando) return <div className="min-h-screen bg-slate-950 text-slate-400 p-6 text-sm">Cargando panel de control...</div>;
-  if (!tienda) return <div className="min-h-screen bg-slate-950 text-red-400 p-6 text-sm">Error cargando tienda administrativa.</div>;
+  const eliminarProducto = async (id: string) => {
+    if (!confirm("¿Seguro que deseas eliminar este producto permanentemente?")) return;
+    
+    try {
+      const { error } = await supabase.from('productos').delete().eq('id', id);
+      if (error) throw error;
+      if (tiendaId) cargarProductos(tiendaId);
+    } catch (err: any) {
+      alert("Error al eliminar: " + err.message);
+    }
+  };
+
+  const cerrarSesion = async () => {
+    await supabase.auth.signOut();
+    router.push('/');
+  };
+
+  if (cargando) return <div className="min-h-screen bg-slate-950 text-slate-400 p-6 text-xs flex items-center justify-center font-mono">CARGANDO PANEL DE CONTROL...</div>;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans max-w-xl mx-auto p-4 pb-12">
-      <header className="mb-6 border-b border-slate-800 pb-4">
-        <h1 className="text-xl font-black text-amber-400 uppercase tracking-tight">Panel Administrativo</h1>
-        <p className="text-xs text-slate-400 mt-0.5">Gestión de inventario para: {tienda.nombre_tienda}</p>
-      </header>
-
-      {/* SECCIÓN 1: Generador de Texto para Grupos */}
-      <section className="bg-slate-900 rounded-2xl border border-slate-800 p-4 mb-6">
-        <div className="flex justify-between items-center mb-3">
-          <h2 className="text-sm font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
-            <ShoppingBag size={16}/> Copiar Texto para WhatsApp
-          </h2>
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans max-w-4xl mx-auto p-4 md:p-6 pb-24">
+      
+      {/* HEADER DEL PANEL */}
+      <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-slate-900 border border-slate-800 rounded-3xl p-6 gap-4 mb-8 shadow-xl">
+        <div>
+          <p className="text-[10px] text-amber-400 font-black uppercase tracking-widest">Consola de Administración</p>
+          <h1 className="text-xl font-black text-white uppercase tracking-tight">{nombreTienda}</h1>
           <button 
-            onClick={copiarAlPortapapeles}
-            className={`text-xs font-black py-2 px-4 rounded-xl flex items-center gap-1.5 transition-colors ${textoCopiado ? 'bg-emerald-500 text-slate-950' : 'bg-amber-400 text-slate-950 hover:bg-amber-500'}`}
+            onClick={() => window.open(`/?t=${slug}`, '_blank')}
+            className="text-xs text-slate-400 hover:text-white flex items-center gap-1 mt-1 transition-colors"
           >
-            {textoCopiado ? (<><Check size={14}/> ¡Copiado!</>) : (<><Copy size={14}/> Copiar Lista</>)}
+            <Eye size={12} /> Ver tu tienda pública
           </button>
         </div>
-        <p className="text-xs text-slate-500 mb-3">Este es el texto limpio que vas a pegar en tus grupos de WhatsApp. Los productos ocultos no saldrán en la lista.</p>
-        <textarea 
-          readOnly 
-          value={generarPegoteTexto()} 
-          className="w-full h-48 bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-mono text-slate-300 focus:outline-none resize-none"
-        />
-      </section>
+        <button 
+          onClick={cerrarSesion}
+          className="bg-slate-950 hover:bg-rose-950/40 border border-slate-800 hover:border-rose-900/60 text-slate-400 hover:text-rose-400 text-xs font-bold py-2 px-4 rounded-xl transition-all flex items-center gap-1.5 self-end sm:self-auto"
+        >
+          <LogOut size={14} /> Salir
+        </button>
+      </header>
 
-      {/* SECCIÓN 2: Lista de Control de Inventario */}
-      <section className="bg-slate-900 rounded-2xl border border-slate-800 p-4">
-        <h2 className="text-sm font-bold text-slate-300 uppercase tracking-wider mb-4">Control Rápido de Stock</h2>
-        <div className="space-y-3">
-          {productos.map((p) => (
-            <div key={p.id} className={`p-3 rounded-xl border flex justify-between items-center transition-colors ${p.disponible ? 'bg-slate-950 border-slate-800' : 'bg-slate-950/40 border-slate-900/60 opacity-60'}`}>
-              <div>
-                <h3 className={`font-bold text-xs ${p.disponible ? 'text-slate-200' : 'text-slate-500 line-through'}`}>{p.nombre}</h3>
-                <p className="text-[11px] text-amber-400 font-semibold mt-1">${p.precio_usd} USD <span className="text-slate-500 font-normal">/ ${p.precio_cup?.toLocaleString()} CUP</span></p>
-              </div>
-              <button 
-                onClick={() => alternarDisponibilidad(p.id, p.disponible)}
-                className={`py-2 px-3 rounded-xl flex items-center gap-1 text-[11px] font-bold transition-colors ${p.disponible ? 'bg-slate-800 text-slate-300 hover:bg-slate-700' : 'bg-slate-900 text-slate-600 hover:bg-slate-800'}`}
-              >
-                {p.disponible ? (<><Eye size={12}/> Visible</>) : (<><EyeOff size={12}/> Oculto</>)}
-              </button>
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-8">
+        
+        {/* FORMULARIO DINÁMICO CON SELECT ACTUALIZADO */}
+        <div className="md:col-span-2 bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-lg h-max">
+          <h2 className="text-sm font-black uppercase tracking-wider text-white mb-4 flex items-center gap-2">
+            {editandoId ? <Edit2 size={16} className="text-cyan-400" /> : <Plus size={16} className="text-amber-400" />}
+            {editandoId ? "Editar Producto" : "Nuevo Producto"}
+          </h2>
+
+          <form onSubmit={guardarProducto} className="space-y-4">
+            <div>
+              <label className="block text-[10px] uppercase tracking-wider text-slate-400 font-bold mb-1">Nombre del artículo</label>
+              <input
+                type="text"
+                placeholder="Ej. Tenis Nike Air Max"
+                value={nombre}
+                onChange={(e) => setNombre(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-slate-100 focus:outline-none focus:border-amber-400 transition-colors"
+                required
+              />
             </div>
-          ))}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[10px] uppercase tracking-wider text-slate-400 font-bold mb-1">Precio USD</label>
+                <input
+                  type="number"
+                  step="any"
+                  placeholder="0.00"
+                  value={precioUsd}
+                  onChange={(e) => setPrecioUsd(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-slate-100 focus:outline-none focus:border-amber-400 font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] uppercase tracking-wider text-slate-400 font-bold mb-1">Precio CUP</label>
+                <input
+                  type="number"
+                  step="any"
+                  placeholder="0.00"
+                  value={precioCup}
+                  onChange={(e) => setPrecioCup(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-slate-100 focus:outline-none focus:border-amber-400 font-mono"
+                />
+              </div>
+            </div>
+
+            {/* SELECCIÓN DE CATEGORÍAS ESTÁNDAR (REEMPLAZA AL INPUT DE TEXTO) */}
+            <div>
+              <label className="block text-[10px] uppercase tracking-wider text-slate-400 font-bold mb-1">Categoría</label>
+              <div className="relative">
+                <select
+                  value={categoria}
+                  onChange={(e) => setCategoria(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-slate-100 focus:outline-none focus:border-amber-400 appearance-none cursor-pointer"
+                  required
+                >
+                  {CATEGORIAS_ESTANDAR.map((cat) => (
+                    <option key={cat} value={cat} className="bg-slate-950 text-slate-200">
+                      {cat}
+                    </option>
+                  ))}
+                </select>
+                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-slate-500">
+                  <Layers size={12} />
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[10px] uppercase tracking-wider text-slate-400 font-bold mb-1">Enlace de la Imagen (URL)</label>
+              <input
+                type="url"
+                placeholder="https://ejemplo.com/imagen.jpg"
+                value={urlImagen}
+                onChange={(e) => setUrlImagen(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-slate-100 focus:outline-none focus:border-amber-400 font-mono"
+              />
+            </div>
+
+            <div className="flex items-center justify-between bg-slate-950 border border-slate-800 rounded-xl p-3">
+              <span className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">Disponible para la venta</span>
+              <input
+                type="checkbox"
+                checked={disponible}
+                onChange={(e) => setDisponible(e.target.checked)}
+                className="w-4 h-4 accent-amber-400 cursor-pointer"
+              />
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                type="submit"
+                className={`flex-1 text-slate-950 font-black text-xs py-2.5 rounded-xl uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors ${editandoId ? 'bg-cyan-400 hover:bg-cyan-500' : 'bg-amber-400 hover:bg-amber-500'}`}
+              >
+                {editandoId ? <>Actualizar <Check size={14} /></> : <>Añadir <Plus size={14} /></>}
+              </button>
+              {editandoId && (
+                <button
+                  type="button"
+                  onClick={limpiarFormulario}
+                  className="bg-slate-950 border border-slate-800 text-slate-400 hover:text-white px-3 rounded-xl transition-colors"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+          </form>
         </div>
-      </section>
+
+        {/* LISTADO DE PRODUCTOS */}
+        <div className="md:col-span-3 space-y-3">
+          <h2 className="text-sm font-black uppercase tracking-wider text-slate-400 px-1 mb-1">Tus Mercancías ({productos.length})</h2>
+          
+          {productos.length === 0 ? (
+            <div className="text-center py-12 bg-slate-900/40 border border-dashed border-slate-800 rounded-3xl text-slate-500 text-xs font-mono">
+              NO HAS REGISTRADO NINGÚN PRODUCTO TODAVÍA.
+            </div>
+          ) : (
+            productos.map((p) => (
+              <div 
+                key={p.id} 
+                className={`bg-slate-900 border ${editandoId === p.id ? 'border-cyan-500/80 ring-1 ring-cyan-500/30' : 'border-slate-800/70'} rounded-2xl p-3 flex items-center justify-between gap-4 shadow-sm transition-all`}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-12 h-12 bg-slate-950 border border-slate-800 rounded-xl flex items-center justify-center overflow-hidden shrink-0">
+                    {p.url_imagen ? (
+                      <img src={p.url_imagen} alt={p.nombre} className="w-full h-full object-cover" />
+                    ) : (
+                      <Package size={16} className="text-slate-700" />
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="font-bold text-xs text-white tracking-tight truncate max-w-[180px] sm:max-w-[260px]">{p.nombre}</h3>
+                    
+                    <div className="flex items-center gap-2 mt-0.5 text-[11px] font-mono font-black">
+                      {p.precio_usd > 0 && <span className="text-amber-400">${p.precio_usd} <span className="text-[8px] text-slate-500 font-sans font-normal uppercase">usd</span></span>}
+                      {p.precio_usd > 0 && p.precio_cup > 0 && <span className="text-slate-700 font-sans font-normal">|</span>}
+                      {p.precio_cup > 0 && <span className="text-slate-200">${p.precio_cup.toLocaleString()} <span className="text-[8px] text-slate-500 font-sans font-normal uppercase">cup</span></span>}
+                    </div>
+                    
+                    <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider text-amber-400 bg-slate-950 border border-slate-850 px-1.5 py-0.5 rounded-md mt-1.5">
+                      <Tag size={8} /> {p.categoria}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    onClick={() => prepararEdicion(p)}
+                    title="Editar producto"
+                    className="w-8 h-8 bg-slate-950 hover:bg-slate-850 text-slate-400 hover:text-cyan-400 border border-slate-800 rounded-xl flex items-center justify-center transition-all"
+                  >
+                    <Edit2 size={12} />
+                  </button>
+                  <button
+                    onClick={() => eliminarProducto(p.id)}
+                    title="Eliminar producto"
+                    className="w-8 h-8 bg-slate-950 hover:bg-rose-950/40 text-slate-400 hover:text-rose-400 border border-slate-800 rounded-xl flex items-center justify-center transition-all"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+      </div>
     </div>
+  );
+}
+
+export default function PanelAdministrador() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-slate-950 text-slate-400 p-6 text-xs flex items-center justify-center font-mono">Cargando la consola segura...</div>}>
+      <ContenidoPanel />
+    </Suspense>
   );
 }
